@@ -1,0 +1,61 @@
+# Secrets and environment
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Python build and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Local runtime data
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+data/
+evidence/
+replays/
+logs/
+*.log
+
+# Editor and OS
+.DS_Store
+__MACOSX/
+.idea/
+.vscode/
+
+# Frontend caches
+node_modules/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+
+# Runtime data
+data/
+build/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# OS
+.DS_Store
