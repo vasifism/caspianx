@@ -1,0 +1,13 @@
+CaspianX Eval Completion Add-on — additive overlay.
+
+Requires: Existing CaspianX plus previously delivered Autonomous Conversation Engine.
+Install from your project root:
+    unzip ~/Downloads/CaspianX_Eval_Completion_Addon.zip -d .
+    python -m ruff check .
+    python -m ruff format --check .
+    python -m pytest -q
+    python -m scripts.final_release
+
+By default, added scripts run offline. Explicit --live --confirm-practice-contact
+can spend one authorized practice touch. No eval contacts are sent.
+See docs/EVAL_COMPLETION_RUNBOOK.md.
