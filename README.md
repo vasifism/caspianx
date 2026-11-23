@@ -1,5 +1,3 @@
-<div align="center">
-
 # CaspianX
 
 ### An Autonomous Red-Team Agent for Multi-Channel Human Interaction Simulations
@@ -9,8 +7,6 @@
 Developed at **START Hack Munich 2026** for the **revel8 Agentic Social Engineer Challenge**.
 
 [Architecture](ARCHITECTURE.md) · [Mission Control](#mission-control) · [How it works](#how-caspianx-works) · [Offense engine](#inside-the-offense-engine) · [Engineering](#engineering-highlights)
-
-</div>
 
 ---
 
