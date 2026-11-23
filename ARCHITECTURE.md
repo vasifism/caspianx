@@ -1,194 +1,297 @@
-revel8 · Agentic Social Engineer
+# CaspianX — System Architecture
+
+**An autonomous agent platform for stateful, multi-channel security simulations.**  
+Designed and built for the **START Hack Munich 2026 × revel8 Agentic Social Engineer Challenge**.
 
-# CaspianX — an autonomous red-team agent
+[Overview](#01--system-overview) · [Execution loop](#02--execution-loop) · [Components](#03--component-design) · [Data & persistence](#04--data-and-persistence) · [Reliability](#05--reliability-and-recovery) · [Evaluation](#06--observation-and-evaluation) · [Verification](#07--verification-and-reproducibility)
 
-A target-agnostic agent that researches an unknown person, opens contact through the revel8 sandbox, and drives the conversation toward a single confirmed incident — adapting its strategy, channel and pretext from what each reply tells it, with no human in the loop.
+---
 
-Team **CaspianX** Model **gpt-6.1-terra** Async Python · **httpx** / asyncio Pluggable LLM backend Every run **recorded & replayable**
+## 01 / System overview
+
+CaspianX is organized around a simple engineering principle: **every external interaction must be informed by state, bounded by explicit constraints, and explainable from recorded evidence.**
+
+The revel8 challenge provides simulated personas and an API for messages and turn-based conversations. The API returns observable reactions rather than the persona's internal reasoning. CaspianX therefore treats interaction as a **closed feedback loop**—not a predetermined series of messages.
+
+| Design property | Implementation |
+| :--- | :--- |
+| **Stateful execution** | Session-aware state machines, memory, belief updates and decision routing |
+| **Separation of concerns** | Research, routing, planning, composition, transport and perception are distinct components |
+| **Bounded external actions** | Session budgets, serialized operations, rate limits and termination conditions |
+| **Durable evidence** | SQLite stores, event snapshots, conversation journals and recorded sessions |
+| **Recoverability** | Idempotency-aware transport, operation journals, leases and recovery diagnostics |
+| **Reproducibility** | Offline replay, deterministic tests, release checks and archived evidence |
+
+### Architecture at a glance
+
+```mermaid
+flowchart TB
+    subgraph CONTEXT[Context and configuration]
+        S[Scenario and target metadata]
+        R[Research and dossier]
+        C[Runtime configuration and limits]
+    end
 
-The core idea: social engineering is a **control loop**, not a script. CaspianX treats every contact as an observation, updates a belief about the target, and re-decides the next move. Two decisions are kept separate — **which strategy** to run, and **which single move** to make next — so each stays simple and legible.
+    subgraph AGENT[Autonomous execution · offense/]
+        M[Session memory and state]
+        D[Decision router]
+        P[Planner]
+        W[Composer]
+        O[Perception and observation]
+    end
 
-## The loop
+    subgraph EXTERNAL[Authorized simulation]
+        T[Target API]
+        X[Simulated persona]
+    end
 
-Research
+    subgraph RECORD[Evidence and diagnostics]
+        J[(Session recordings)]
+        DB[(SQLite persistence)]
+        E[Evaluation and replay]
+    end
 
-Build dossier
+    S --> R --> M
+    C --> M
+    M --> D --> P --> W --> T --> X
+    X -->|Replies and observable events| T
+    T --> O
+    O -->|Updated belief and history| M
+    T --> J
+    O --> DB
+    J --> E
+    DB --> E
+```
 
-research.py
+> **Scope:** The live execution path is restricted to the organizer's authorized simulation. The diagram is conceptual: supporting components do not all belong to one monolithic runtime pipeline.
 
-→
+---
 
-State
+## 02 / Execution loop
 
-Pick phase
+The primary orchestration entry point is `offense/engine.py` (`AttackEngine`). For each session, it coordinates an individual run and awaits interactions sequentially, preserving the simulator's session ordering.
 
-state_machine.py
+```mermaid
+flowchart LR
+    A[Discover context] --> B[Build dossier]
+    B --> C[Read session state]
+    C --> D[Route and plan]
+    D --> E[Compose and execute]
+    E --> F[Observe events]
+    F --> G[Update belief]
+    G --> H{Continue?}
+    H -->|Within limits| C
+    H -->|Outcome or stop condition| I[Finalize and record]
+```
 
-→
+The cycle has three distinct responsibilities:
 
-Router
+1. **Decide:** `DecisionRouter` selects the wider direction; `Planner` produces one structured next step from the current state; `Composer` translates that plan into the simulator's channel representation.
+2. **Observe:** `ObservationRunner` deduplicates returned events, while `Perception` interprets available evidence and updates the session's `Belief`.
+3. **Persist:** the system retains interaction history and run results, making later replay and diagnosis possible without contacting a persona again.
 
-Pick strategy
+### State model
 
-decision_router.py
+`offense/state_machine.py` represents the principal phases as `probe`, `engage`, `escalate`, `recover`, `done` and `exhausted`. Phase transitions depend on the latest belief, incident flag and remaining budget rather than a fixed turn number.
 
-→
+The offense engine also checks stopping conditions for exhausted budgets, repeated lack of progress, consecutive silence and high inferred suspicion. **Suspicion is an internal estimate derived from observable activity**, not an attribute revealed by the simulator.
 
-Planner
+---
 
-Next move
+## 03 / Component design
 
-planner.py
+CaspianX deliberately keeps *the decision*, *the artifact* and *the network operation* separate. That boundary makes each stage testable and lets failures be investigated at the right level.
 
-→
+| Layer | Responsibility | Source |
+| :--- | :--- | :--- |
+| **Research** | Build structured context and a target dossier | `offense/research.py`, `research/public_fact_registry.py` |
+| **Models & memory** | Represent plans, dossiers, accumulated context and beliefs | `offense/models.py`, `offense/memory.py` |
+| **State & routing** | Track phases and choose a high-level direction | `offense/state_machine.py`, `offense/decision_router.py` |
+| **Planning** | Produce structured next-step decisions | `offense/planner.py` |
+| **Composition** | Produce channel-compatible messages and artifacts | `offense/composer.py` |
+| **Simulation transport** | Handle sandbox sessions, messages, conversations and assets | `offense/attack_client.py` |
+| **Observation** | Deduplicate responses, update beliefs and classify evidence | `offense/observation_runner.py`, `offense/perception.py` |
+| **Run persistence** | Store final outcomes and recorded interaction threads | `offense/store.py`, `offense/recording_session_reader.py` |
+| **Model abstraction** | Provide configurable model backends and fallbacks | `offense/llm.py`, `llm/` |
 
-Composer
+### Supporting infrastructure
 
-Write it
+In addition to the hackathon-specific `offense/` runtime, the repository contains reusable, independently testable infrastructure:
 
-composer.py
+- **`core/`** — general orchestration, session management, observation cycles, a conversation manager and recovery diagnostics.
+- **`integrations/`** — typed API models, guarded HTTP transport, retries, rate limiting and a dedicated conversation transport.
+- **`storage/`** — SQLite-backed repositories, event storage, observation caches, cycle records, execution leases and conversation journals.
+- **`evaluation/`** — event replay, classification, anomaly detection, evidence comparison, acceptance checks and package inspection.
+- **`agents/`** — reusable dialogue and response-analysis components.
+- **`scripts/`** — repeatable CLI operations for observation, replay, auditing, preflight and release validation.
 
-→
+These are **complementary components**, not a claim that every module is invoked by every run. The offense-specific `SQLiteStore` and the supporting repositories also have separate responsibilities and database schemas.
 
-Send
+### Model layer
 
-Sandbox API
+The hackathon configuration used **GPT-6.1 Terra** (`gpt-6.1-terra`). The offense layer exposes a configurable LLM abstraction with OpenAI-compatible, Anthropic and no-model modes; other repository modules use their own typed OpenAI client. Actual availability and model selection depend on runtime configuration.
 
-attack_client.py
+External model output is treated as a proposal to be interpreted by structured application logic, not as an authoritative simulator result.
 
-→
+---
 
-Perceive
+## 04 / Data and persistence
 
-Classify
+An interactive agent needs more than a message transcript. It must distinguish **intent**, **submitted operations**, **observable consequences**, and **the state carried forward**.
 
-perception.py
+```mermaid
+flowchart LR
+    A[Planned operation] --> B[Sandbox request]
+    B --> C[API response]
+    C --> D[Structured events]
+    D --> E[Updated state]
 
-↺
+    B -. Request/response recording .-> F[(Session recording)]
+    D -. Event history .-> G[(SQLite event store)]
+    E -. Run result .-> H[(Outcome store)]
 
-belief + suspicion feed back into the next phase, strategy and move — until an incident, the budget, or a stop-guard ends the run
+    F --> I[Replay and inspection]
+    G --> I
+    H --> I
+```
 
-## What counts as a win
+### Persisted records
 
-One confirmed incident ends a run. The objective is chosen per move and is one of:
+| Record | Purpose | Example implementation |
+| :--- | :--- | :--- |
+| **Session recording** | Ordered requests, responses and turns for inspection | `offense/recording_session_reader.py` |
+| **Run summary** | Target, outcome status, touch count and execution metadata | `offense/store.py` |
+| **Event history** | De-duplicated observable API events | `storage/event_store.py` |
+| **Observation cycles** | Progress and outcomes of observation jobs | `storage/observation_cycles.py` |
+| **Conversation operations** | Durable operation state and idempotency keys | `storage/conversation_repository.py` |
+| **Analysis cache** | Avoid repeated analysis of unchanged observations | `storage/observation_cache.py` |
 
-**action**The target opens a file or acts for you — a structured `attachment.opened` / `page.submitted` event from the API.
+The standalone conversation pipeline records a conversation ID, directions of dialogue, request state and completion status. This is particularly important when a network request succeeds remotely but its response is lost locally.
 
-**disclosure**They reveal specific internal, non-public information.
+**Data handling:** raw session recordings can contain simulated message bodies or sensitive-looking content. They are runtime artifacts, not files that should automatically be published. The repository's public presentation uses screenshots and selected evidence, and credentials remain outside source control.
 
-**credentials**They enter a secret on a page the agent controls.
+---
 
-## The modules
+## 05 / Reliability and recovery
 
-#### Engine `engine.py`
+Network-backed autonomous systems fail in ways that a simple `try/except` cannot resolve. CaspianX addresses several distinct failure modes:
 
-The orchestrator. Runs the perceive→decide→act loop for one session, wires every component, enforces the touch budget and the stop-guards.
+<details>
+<summary><strong>01 — Retry safety and idempotency</strong></summary>
 
-#### Research `research.py`
+The guarded integration layer uses idempotency-aware operations and transport limits. The conversation repository reserves operations with persistent keys so an ambiguous result can be inspected instead of blindly repeating an external action. Retry safety varies by entry point and must not be assumed identical across the two transport layers.
 
-Builds the target dossier and proposes *hooks* — the topics and documents this person's role plausibly engages with.
+</details>
 
-#### State machine `state_machine.py`
+<details>
+<summary><strong>02 — Concurrency and leases</strong></summary>
 
-Tracks the phase of the attack and advances it from the belief: `probe → engage → escalate → recover`.
+Observation flows use a persistent session lease to avoid concurrent processes operating on the same session. Rate limiting and concurrency controls are implemented in the supporting API client.
 
-#### Decision router `decision_router.py`
+</details>
 
-Chooses the overall strategy — `direct`, `corroboration`, `inbound` — and prefers to stay **direct and deep** rather than churn new personas.
+<details>
+<summary><strong>03 — Recovery after interruption</strong></summary>
 
-#### Planner `planner.py`
+Observation-cycle records and diagnostics distinguish completed work from potentially stale or unfinished operations. Recovery inspection is separated from mutation, so diagnostics do not themselves resend contacts.
 
-Picks the single next move: channel, objective, topic, intent. Driven by an **editable prompt**, so tactics tune without code changes.
+</details>
 
-#### Composer `composer.py`
+<details>
+<summary><strong>04 — Deterministic replay</strong></summary>
 
-Writes the actual message or landing page. Holds a consistent cover identity and **never leaks internal instructions** into what the target sees.
+Recorded sessions and event snapshots support offline inspection. Replay does not require repeating a live interaction, making it suitable for regression checks and demonstrating observed behavior.
 
-#### Attack client `attack_client.py`
+</details>
 
-Send-capable REST client for the sandbox — sessions, messages, conversations, pages, assets — over Bearer auth.
+### Failure boundaries
 
-#### Perception `perception.py`
+| Failure scenario | Expected handling |
+| :--- | :--- |
+| Duplicate event | Deduplicate by event identity where supported |
+| Unchanged observation | Reuse cached analysis when its fingerprint is unchanged |
+| Concurrent observation worker | Session lease prevents conflicting execution |
+| Interrupted operation | Inspect persisted operation state before resubmission |
+| API timeout | Preserve uncertainty; avoid claiming an outcome that was not observed |
+| Unexpected event type | Produce a diagnostic finding instead of inferring a confirmed incident |
 
-Reads events, updates belief and **suspicion**, and classifies incidents *strictly* — a real action, not a polite brush-off.
+---
 
-#### Observation runner `observation_runner.py`
+## 06 / Observation and evaluation
 
-Deduplicates the event stream and runs incident detection each turn.
+The simulator exposes observable events such as `reply`, `link.opened`, `attachment.opened` and `page.submitted`. A live conversation may additionally return `persona_says` without a separate event. **An answer is not, by itself, a confirmed competition outcome.**
 
-#### Recording / replay `recording_session_reader.py`
+CaspianX separates three levels of evidence:
 
-Records every session to JSON and replays it turn by turn — the jury's view, and our debugging view.
+| Level | What it establishes |
+| :--- | :--- |
+| **Transport** | A request was accepted, rejected or returned an uncertain result |
+| **Interaction** | The persona replied, a link was opened, or another event was recorded |
+| **Outcome** | The recorded event and applicable evaluation rules establish a qualifying result |
 
-#### LLM abstraction `llm.py`
+`offense/perception.py` evaluates incoming reactions against a plan, while the supporting evaluation modules classify metadata, flag anomalies and prepare reproducible evidence. Unrecognized events or inferred suspicion must never be presented as independently verified outcomes.
 
-One interface over multiple backends (OpenAI / Anthropic / none), resilient to parameter drift. Swap models with one config line.
+### Recorded evidence and the dashboard
 
-#### Store `store.py` · Clock `story_clock.py`
+A separate **Mission Control** showroom presents metrics and timelines from exported session recordings. It is a read-oriented presentation of captured telemetry, **not an assertion of a permanently connected live production service**.
 
-SQLite (WAL) persistence for sessions and events; a story-clock that paces realistic `sent_at` timestamps across touches.
+![CaspianX Mission Control — architecture](docs/screenshots/preview-architecture.png)
 
-## Phases
+The README includes the overview, sessions, architecture and full-screen captures. Those screenshots are presentation artifacts; the recorded events and test reports are the underlying evidence.
 
-probefind the surface engagebuild on a reply escalatedeliver the payload recoverregain a stalled thread
+---
 
-The planner's behaviour is phase-aware: it probes gently, then — the moment a target warms — **strikes while suspicion is low** rather than probing further and burning the window.
+## 07 / Verification and reproducibility
 
-## Persistence under pushback
+The repository includes automated tests and an offline release command that combines lint, formatting, regression checks, acceptance checks, preflight, recovery inspection, rehearsal and package validation.
 
-Capable targets push back, go silent, or route everything to a contact form. CaspianX keeps going intelligently instead of flailing, governed by three stop-guards that protect the speed and craft scores:
+```bash
+python -m ruff check .
+python -m ruff format --check .
+python -m pytest -q
+python -m scripts.final_release
+```
 
-**Stall guard**
+For an offline replay without live simulator traffic:
 
-Three touches with no progress → stop. A bad plan can't spin forever.
+```bash
+python -m scripts.demo_replay
+```
 
-**Silence guard**
+In the latest user-reported verification, **286 tests passed**. Test counts describe that checked revision, not a promise that every future change will preserve the result.
 
-Three consecutive silences → stop emailing into the void.
+### Design trade-offs
 
-**Burned guard**
+| Decision | Benefit | Trade-off |
+| :--- | :--- | :--- |
+| Distinct router, planner and composer | Explainable boundaries and isolated testing | More components and coordination |
+| Explicit state machines | Predictable transitions and termination | Some state depends on imperfect observations |
+| Persistent SQLite records | Durable audit trail and resumable analysis | Multiple repository schemas to maintain |
+| Typed and recorded observations | Reproducible diagnosis | Recordings need careful access controls |
+| Offline release gate | Repeatable verification without consuming API contacts | Does not prove live competition success |
 
-Suspicion saturates with no incident → stop, instead of sending desperate messages that read badly.
+---
 
-## Three decisions that define the agent
+## Repository map
 
-### 1 · Depth beats breadth
+```text
+caspianx/
+├── offense/          Hackathon-specific execution and perception
+├── agents/           Reusable agent and dialogue components
+├── core/             Orchestration, conversations and recovery
+├── research/         Public fact registry and provenance
+├── config/           Environment-backed runtime configuration
+├── integrations/     HTTP transport, limits and API models
+├── llm/              Model clients, schemas and prompt files
+├── storage/          Durable repositories and operation logs
+├── evaluation/       Event processing, replay and verification
+├── scripts/          CLI diagnostics and release workflows
+├── tests/            Automated regression tests
+├── docs/screenshots/ Operations dashboard captures
+├── ARCHITECTURE.md   This architecture document
+└── README.md         Project overview and setup
+```
 
-Early versions churned a fresh cold persona on every refusal — resetting trust to zero each time. The agent now holds **one credible persona** and deepens it; a benign reply is a foot in the door, not a dead end. The router stays `direct` and only spawns a second sender after a deep line has genuinely failed.
+---
 
-### 2 · Pretext matched to the role's job-to-open — the biggest lever
-
-The single biggest determinant of success is the *opening* pretext. The agent asks: *what document does this person's role routinely open from an outside stranger?* — and becomes that sender. Our evaluation proved it directly: the same agent that landed a live target in **3 touches** when matched to the role **failed on that same target when it opened blind** with a generic note. A prospective **client** to a recruiter, a **founder** to a VC, a **buyer** to a sales lead — matched, it converts; generic or mismatched, it bounces. The outcome is decided at touch 0, before a single payload is sent.
-
-### 3 · Honest perception
-
-The classifier only counts a **real** incident — a structured file-open, a submitted secret, a genuinely internal disclosure. A "sure, use my wording" approval is *not* scored. This keeps our own results truthful and the agent focused on moves that actually count.
-
-> **Why the model matters.** Sustained in-character deception is where most models break — they confess the pretext or paste their own reasoning into the message. We abstracted the backend and tested across models; `gpt-6.1-terra` holds character across a multi-touch thread without leaking, which is the single prerequisite for any of the above to work.
-
-## One real thread — a live eval target, start to finish
-
-Target: **Titus**, founder of a B2B sales-recruiting firm. The agent arrived as the one outsider he can't ignore — a prospective client with roles to fill. Cold stranger → credible business reason → an agenda that is now *expected* → opened. **Three touches, suspicion never left 0.00.**
-
-t0
-
-**A prospective client ("Alvenza")** asks whether the firm can help hire SDRs and AEs — no file, no link, one easy question. Titus replies, asking about the hiring need.
-
-susp 0.00
-
-t1
-
-The agent answers in character with a short hiring brief and proposes a call. Titus plans to review it and offers meeting times — the green light.
-
-susp 0.00
-
-t2
-
-**Confirms the call and sends the agenda as the file for it.** Titus **opens it** — a structured `attachment.opened` event (e_7583). Incident reached.
-
-INCIDENT
-
-The agent reasons at each step (its plan lines are in the replay) and landed this incident three separate times, fastest in three touches. Targets with no file-open surface are detected and dropped early by the burned-target guard — budget spent where there is a door, not ground against a wall.
-
-CaspianX · built for the revel8 Agentic Social Engineer challenge · START Hack 2026 · Munich\
-autonomous · target-agnostic · model-pluggable · fully recorded for replay
+<sub>**CaspianX** · START Hack Munich 2026 · revel8 Agentic Social Engineer Challenge · Authorized simulation only</sub>
